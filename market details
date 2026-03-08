@@ -1,0 +1,185 @@
+pip install yfinance pandas
+import yfinance as yf
+import pandas as pd
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+# --- Configuration ---
+# IMPORTANT: Replace this with a larger list of NSE symbols.
+# You can find a comprehensive list online (e.g., from NSE's website or financial data providers).
+# For this example, we are using NIFTY 50 and BANK NIFTY stocks.
+NSE_SYMBOLS = [
+    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'HINDUNILVR.NS', 'INFY.NS',
+    'SBIN.NS', 'BHARTIARTL.NS', 'KOTAKBANK.NS', 'LICI.NS', 'ITC.NS', 'AXISBANK.NS',
+    'HCLTECH.NS', 'DMART.NS', 'WIPRO.NS', 'TATAMOTORS.NS', 'MARUTI.NS', 'ASIANPAINT.NS',
+    'ADANIENT.NS', 'GRASIM.NS', 'TATASTEEL.NS', 'BAJFINANCE.NS', 'M&M.NS', 'ADANIPORTS.NS',
+    'TITAN.NS', 'SUNPHARMA.NS', 'ONGC.NS', 'POWERGRID.NS', 'ULTRACEMCO.NS', 'NTPC.NS',
+    'COALINDIA.NS', 'TECHM.NS', 'HINDALCO.NS', 'BAJAJFINSV.NS', 'NESTLEIND.NS', 'IOC.NS',
+    'BRITANNIA.NS', 'DIVISLAB.NS', 'HEROMOTOCO.NS', 'DRREDDY.NS', 'BPCL.NS', 'CIPLA.NS',
+    'LT.NS', 'SBILIFE.NS', 'APOLLOHOSP.NS', 'EICHERMOT.NS', 'UPL.NS'
+]
+
+def get_liquid_stocks(universe, min_volume=1000000):
+    """
+    Fetches stocks from the universe and filters them by Average Daily Volume.
+    """
+    liquid_stocks = []
+    print(f"Scanning {len(universe)} stocks for liquidity...")
+    for i, symbol in enumerate(universe):
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            # Ensure data exists before trying to access it
+            if info and 'averageVolume' in info and info['averageVolume'] is not None:
+                if info['averageVolume'] > min_volume:
+                    stock_data = {
+                        'Symbol': symbol,
+                        'Name': info.get('shortName', 'N/A'),
+                        'Sector': info.get('sector', 'N/A'),
+                        'AverageVolume': info['averageVolume']
+                    }
+                    liquid_stocks.append(stock_data)
+        except Exception as e:
+            # Some stocks may have data issues, we just skip them
+            # print(f"Could not fetch data for {symbol}: {e}")
+            pass
+        # Update a simple progress indicator in the console
+        if (i + 1) % 10 == 0:
+            print(f"  ...processed {i + 1}/{len(universe)} symbols")
+
+    print(f"Found {len(liquid_stocks)} liquid stocks.")
+    return pd.DataFrame(liquid_stocks)
+
+def find_breakout_setups(liquid_df, max_percentage_to_high=2.0):
+    """
+    Finds stocks trading close to their previous day's high.
+    """
+    if liquid_df.empty:
+        return pd.DataFrame()
+
+    breakout_candidates = []
+    print("Analyzing for breakout setups...")
+    for index, row in liquid_df.iterrows():
+        symbol = row['Symbol']
+        try:
+            # Fetch last 5 days of data to get the previous day's high
+            hist = yf.Ticker(symbol).history(period="5d")
+            if hist.empty or len(hist) < 2:
+                continue
+
+            prev_day_high = hist.iloc[-2]['High']
+            last_close_price = hist.iloc[-1]['Close']
+
+            if prev_day_high == 0:
+                continue
+
+            # Calculate how close the last close is to the previous high
+            perc_to_high = ((last_close_price / prev_day_high) - 1) * 100
+
+            # We want stocks that closed below the high but are within a small percentage
+            if 0 < perc_to_high < max_percentage_to_high:
+                setup_data = {
+                    'Symbol': symbol,
+                    'Name': row['Name'],
+                    'Sector': row['Sector'],
+                    'Prev High': round(prev_day_high, 2),
+                    'Last Close': round(last_close_price, 2),
+                    '% to High': f"{perc_to_high:.2f}%"
+                }
+                breakout_candidates.append(setup_data)
+        except Exception as e:
+            # print(f"Could not analyze {symbol} for breakout: {e}")
+            pass
+
+    print(f"Found {len(breakout_candidates)} potential breakout setups.")
+    return pd.DataFrame(breakout_candidates)
+
+# --- GUI Application ---
+
+class ScreenerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Intraday Breakout Screener")
+        self.root.geometry("900x600")
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        # --- Frame for controls ---
+        control_frame = ttk.Frame(self.root, padding="10")
+        control_frame.pack(fill='x')
+
+        ttk.Label(control_frame, text="Focus Sector (e.g., Bank, IT, Financial Services):").pack(side='left', padx=(0, 10))
+        self.sector_entry = ttk.Entry(control_frame, width=25)
+        self.sector_entry.pack(side='left', padx=(0, 10))
+
+        self.scan_button = ttk.Button(control_frame, text="Scan for Breakouts", command=self.run_scan)
+        self.scan_button.pack(side='left')
+
+        self.status_label = ttk.Label(control_frame, text="Status: Ready", foreground="green")
+        self.status_label.pack(side='right', padx=(10, 0))
+
+        # --- Frame for results ---
+        result_frame = ttk.Frame(self.root, padding="10")
+        result_frame.pack(fill='both', expand=True)
+
+        # Treeview for displaying results
+        columns = ('Symbol', 'Name', 'Sector', 'Prev High', 'Last Close', '% to High')
+        self.tree = ttk.Treeview(result_frame, columns=columns, show='headings', height=20)
+
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=130) # Adjust width as needed
+
+        # Scrollbar for the treeview
+        scrollbar = ttk.Scrollbar(result_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        self.tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+    def run_scan(self):
+        self.status_label.config(text="Status: Scanning...", foreground="orange")
+        self.scan_button.config(state='disabled')
+        self.tree.delete(*self.tree.get_children()) # Clear previous results
+        self.root.update_idletasks() # Force GUI to update
+
+        try:
+            # Step 1: Get all liquid stocks
+            all_liquid_df = get_liquid_stocks(NSE_SYMBOLS)
+
+            # Step 2: Filter by user-specified sector
+            sector_keyword = self.sector_entry.get().strip().lower()
+            if sector_keyword:
+                sector_df = all_liquid_df[all_liquid_df['Sector'].str.lower().str.contains(sector_keyword, na=False)]
+                print(f"\n--- Focusing on sector containing '{sector_keyword}' ---")
+            else:
+                sector_df = all_liquid_df
+                print("\n--- Focusing on all liquid sectors ---")
+
+            # Step 3: Find breakout setups in the selected sector
+            final_candidates_df = find_breakout_setups(sector_df)
+
+            # Step 4: Display results
+            if not final_candidates_df.empty:
+                for _, row in final_candidates_df.iterrows():
+                    self.tree.insert('', 'end', values=tuple(row))
+                self.status_label.config(text=f"Status: Done. Found {len(final_candidates_df)} setups.", foreground="green")
+            else:
+                messagebox.showinfo("No Results", "No breakout setups found for the specified criteria. Try a different sector.")
+                self.status_label.config(text="Status: Done. No setups found.", foreground="blue")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred during the scan: {e}")
+            self.status_label.config(text="Status: Error", foreground="red")
+
+        finally:
+            self.scan_button.config(state='normal')
+
+
+# --- Run the application ---
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ScreenerApp(root)
+    root.mainloop()
+
